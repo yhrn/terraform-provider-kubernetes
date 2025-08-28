@@ -41,9 +41,15 @@ func TestKubernetesManifest_InstallCertManager(t *testing.T) {
 	}
 	tfconfig := loadTerraformConfig(t, "CertManager/certmanager.tf", tfvars)
 	tf.SetConfig(ctx, tfconfig)
-	tf.Init(ctx)
+	err = tf.Init(ctx)
+	if err != nil {
+		t.Fatalf("Terraform init failed: %v", err)
+	}
 	t.Log("CertManager has a very large manifest. This will take a few seconds to apply...")
-	tf.Apply(ctx)
+	err = tf.Apply(ctx)
+	if err != nil {
+		t.Fatalf("Terraform apply failed: %v", err)
+	}
 	t.Log("CertManager apply finished")
 
 	k8shelper.AssertResourceExists(t, "apiextensions.k8s.io/v1", "customresourcedefinitions", "certificaterequests.cert-manager.io")

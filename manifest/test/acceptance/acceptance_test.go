@@ -26,6 +26,13 @@ var tfhelper *tftest.Helper
 var k8shelper *kuberneteshelper.Helper
 
 func TestMain(m *testing.M) {
+	// TODO(yhrn): Revert
+	//kcPath := "/home/mohrn/tmp/kcp-latest/.kcp/admin.kubeconfig"
+	kcPath := "/home/mohrn/.kube/config"
+
+	os.Setenv("KUBECONFIG", kcPath)
+	os.Setenv("KUBE_CONFIG_PATH", kcPath)
+
 	var err error
 
 	sourceDir, err := os.Getwd()

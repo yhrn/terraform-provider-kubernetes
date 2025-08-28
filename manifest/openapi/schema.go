@@ -13,16 +13,24 @@ import (
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/hashicorp/terraform-provider-kubernetes/manifest"
-	"github.com/mitchellh/hashstructure"
+	// "github.com/mitchellh/hashstructure"
 )
 
 func resolveSchemaRef(ref *openapi3.SchemaRef, defs map[string]*openapi3.SchemaRef) (*openapi3.Schema, error) {
+
+	sid := ref.Ref[strings.LastIndex(ref.Ref, "/")+1 : len(ref.Ref)]
+
+	// These are exceptional situations that require non-standard types. And they need to
+	// have preference over returning non-nil ref.Value or we may end up in recursion runaway.
+	switch sid {
+	case "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps":
+		return &openapi3.Schema{Type: ""}, nil
+	case "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSONSchemaProps":
+		return &openapi3.Schema{Type: ""}, nil
+	}
 	if ref.Value != nil {
 		return ref.Value, nil
 	}
-
-	rp := strings.Split(ref.Ref, "/")
-	sid := rp[len(rp)-1]
 
 	nref, ok := defs[sid]
 
@@ -31,20 +39,6 @@ func resolveSchemaRef(ref *openapi3.SchemaRef, defs map[string]*openapi3.SchemaR
 	}
 	if nref == nil {
 		return nil, errors.New("nil schema reference")
-	}
-
-	// These are exceptional situations that require non-standard types.
-	switch sid {
-	case "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps":
-		t := openapi3.Schema{
-			Type: "",
-		}
-		return &t, nil
-	case "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSONSchemaProps":
-		t := openapi3.Schema{
-			Type: "",
-		}
-		return &t, nil
 	}
 
 	return resolveSchemaRef(nref, defs)
@@ -60,7 +54,8 @@ func getTypeFromSchema(elem *openapi3.Schema, stackdepth uint64, typeCache *sync
 		return nil, errors.New("cannot convert OpenAPI type (nil)")
 	}
 
-	h, herr := hashstructure.Hash(elem, nil)
+	// TODO(yhrn): Probably delete the typeCache completely (including commented out import above and fix go.mod)
+	//h, herr := hashstructure.Hash(elem, nil)
 
 	var t tftypes.Type
 
@@ -113,7 +108,28 @@ func getTypeFromSchema(elem *openapi3.Schema, stackdepth uint64, typeCache *sync
 				th[ap.String()] = "io.k8s.apimachinery.pkg.util.intstr.IntOrString"
 				return tftypes.String, nil
 			}
+		} else if elem.Not == nil && len(elem.AllOf)+len(elem.AnyOf)+len(elem.OneOf) == 1 {
+			// In the general case of using `not`, `allOf`, `anyOf` or `oneOf` things quickly get complex
+			// and it makes sense to fall back to DynamicPseudoType. However in the case when `not` isn't
+			// used and exactly one ref is specified through one of the other keywords we can just resolve
+			// the current schema to the the referenced one. This also happens to solve for how the schema
+			// for the standard "metadata" field is included.
+			var combinationRefs openapi3.SchemaRefs
+			switch {
+			case len(elem.AllOf) == 1:
+				combinationRefs = elem.AllOf
+			case len(elem.AnyOf) == 1:
+				combinationRefs = elem.AnyOf
+			default:
+				combinationRefs = elem.OneOf
+			}
+			schema, err := resolveSchemaRef(combinationRefs[0], defs)
+			if err != nil {
+				return nil, err
+			}
+			return getTypeFromSchema(schema, stackdepth-1, typeCache, defs, ap, th)
 		}
+
 		return tftypes.DynamicPseudoType, nil // this is where DynamicType is set for when an attribute is tagged as 'x-kubernetes-preserve-unknown-fields'
 
 	case "array":
@@ -133,9 +149,9 @@ func getTypeFromSchema(elem *openapi3.Schema, stackdepth uint64, typeCache *sync
 			} else {
 				t = tftypes.List{ElementType: et}
 			}
-			if herr == nil {
-				typeCache.Store(h, t)
-			}
+			// if herr == nil {
+			// 	typeCache.Store(h, t)
+			// }
 			return t, nil
 		case elem.AdditionalProperties != nil && elem.Items == nil: // "overriden" array - translates to a tftypes.Tuple
 			it, err := resolveSchemaRef(elem.AdditionalProperties, defs)
@@ -170,9 +186,9 @@ func getTypeFromSchema(elem *openapi3.Schema, stackdepth uint64, typeCache *sync
 				atts[p] = pType
 			}
 			t = tftypes.Object{AttributeTypes: atts}
-			if herr == nil {
-				typeCache.Store(h, t)
-			}
+			// if herr == nil {
+			// 	typeCache.Store(h, t)
+			// }
 			return t, nil
 
 		case elem.Properties == nil && elem.AdditionalProperties != nil:
@@ -187,17 +203,17 @@ func getTypeFromSchema(elem *openapi3.Schema, stackdepth uint64, typeCache *sync
 				return nil, err
 			}
 			t = tftypes.Map{ElementType: pt}
-			if herr == nil {
-				typeCache.Store(h, t)
-			}
+			// if herr == nil {
+			// 	typeCache.Store(h, t)
+			// }
 			return t, nil
 
 		case elem.Properties == nil && elem.AdditionalProperties == nil:
 			// this is a strange case, encountered with io.k8s.apimachinery.pkg.apis.meta.v1.FieldsV1 and also io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.CustomResourceSubresourceStatus
 			t = tftypes.DynamicPseudoType
-			if herr == nil {
-				typeCache.Store(h, t)
-			}
+			// if herr == nil {
+			// 	typeCache.Store(h, t)
+			// }
 			return t, nil
 
 		}
