@@ -18,6 +18,7 @@ import (
 )
 
 func TestKubernetesManifest_WaitForFields_Pod(t *testing.T) {
+	provider.UseV3 = true
 	ctx := context.Background()
 
 	reattachInfo, err := provider.ServeTest(ctx, hclog.Default(), t)

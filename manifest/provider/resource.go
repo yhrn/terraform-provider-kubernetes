@@ -81,13 +81,18 @@ func IsResourceNamespaced(gvk schema.GroupVersionKind, m meta.RESTMapper) (bool,
 	return false, nil
 }
 
+var UseV3 = true
+
 // TFTypeFromOpenAPI generates a tftypes.Type representation of a Kubernetes resource
 // designated by the supplied GroupVersionKind resource id
 func (ps *RawProviderServer) TFTypeFromOpenAPI(ctx context.Context, gvk schema.GroupVersionKind, status bool) (tftypes.Type, map[string]string, error) {
 
-	// // TODO(yhrn) this is very likely not how to decide on whether to use OpenAPI v3 or not
-	if oapiV3, err := ps.getOAPIv3Foundry(gvk.GroupVersion()); err == nil {
-		return getTypeByGVK(gvk, status, oapiV3, "OpenAPI v3")
+	// TODO(yhrn): Remove this but add some simple cache tests
+	if UseV3 {
+		// // TODO(yhrn) this is very likely not how to decide on whether to use OpenAPI v3 or not
+		if oapiV3, err := ps.getOAPIv3Foundry(gvk.GroupVersion()); err == nil {
+			return getTypeByGVK(gvk, status, oapiV3, "OpenAPI v3")
+		}
 	}
 
 	var tfo tftypes.Object
@@ -158,6 +163,12 @@ func getTypeByGVK(gvk schema.GroupVersionKind, status bool, oapi openapi.Foundry
 			delete(tfo.AttributeTypes, "status")
 		}
 	}
+	// TODO(yhrn): Remove this
+	// To add dep: go get -u github.com/sanity-io/litter
+	// f, _ := os.Create("/home/mohrn/repo/github.com/hashicorp/terraform-provider-kubernetes/mohrn-local/test.txt")
+	// defer f.Close()
+	// w := bufio.NewWriter(f)
+	// w.WriteString(litter.Sdump(tfo))
 
 	return tfo, hints, err
 }

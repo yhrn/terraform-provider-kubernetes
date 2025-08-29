@@ -18,22 +18,31 @@ import (
 
 func resolveSchemaRef(ref *openapi3.SchemaRef, defs map[string]*openapi3.SchemaRef) (*openapi3.Schema, error) {
 
-	sid := ref.Ref[strings.LastIndex(ref.Ref, "/")+1 : len(ref.Ref)]
+	flattenedRef := ref
+	if ref.Value != nil {
+		if len(ref.Value.AllOf) == 1 &&
+			combinationSchemaCount(ref.Value) == 1 &&
+			len(ref.Value.Properties) == 0 &&
+			ref.Value.AdditionalProperties == nil {
 
-	// These are exceptional situations that require non-standard types. And they need to
-	// have preference over returning non-nil ref.Value or we may end up in recursion runaway.
+			flattenedRef = ref.Value.AllOf[0]
+		}
+		if flattenedRef.Value != nil {
+			return flattenedRef.Value, nil
+		}
+	}
+
+	sid := flattenedRef.Ref[strings.LastIndex(flattenedRef.Ref, "/")+1:]
+
+	// These are exceptional situations that require non-standard types TODO(yhrn): Still needed?
 	switch sid {
 	case "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1.JSONSchemaProps":
 		return &openapi3.Schema{Type: ""}, nil
 	case "io.k8s.apiextensions-apiserver.pkg.apis.apiextensions.v1beta1.JSONSchemaProps":
 		return &openapi3.Schema{Type: ""}, nil
 	}
-	if ref.Value != nil {
-		return ref.Value, nil
-	}
 
 	nref, ok := defs[sid]
-
 	if !ok {
 		return nil, errors.New("schema not found")
 	}
@@ -97,6 +106,11 @@ func getTypeFromSchema(elem *openapi3.Schema, stackdepth uint64, typeCache *sync
 		return tftypes.Number, nil
 
 	case "":
+		if elem.Format == "int-or-string" {
+			// TODO(yhrn) - maybe this can go into the string-primitives-union section below?
+			th[ap.String()] = "io.k8s.apimachinery.pkg.util.intstr.IntOrString"
+			return tftypes.String, nil
+		}
 		if xv, ok := elem.Extensions["x-kubernetes-int-or-string"]; ok {
 			xb, err := xv.(json.RawMessage).MarshalJSON()
 			if err != nil {
@@ -108,26 +122,19 @@ func getTypeFromSchema(elem *openapi3.Schema, stackdepth uint64, typeCache *sync
 				th[ap.String()] = "io.k8s.apimachinery.pkg.util.intstr.IntOrString"
 				return tftypes.String, nil
 			}
-		} else if elem.Not == nil && len(elem.AllOf)+len(elem.AnyOf)+len(elem.OneOf) == 1 {
-			// In the general case of using `not`, `allOf`, `anyOf` or `oneOf` things quickly get complex
-			// and it makes sense to fall back to DynamicPseudoType. However in the case when `not` isn't
-			// used and exactly one ref is specified through one of the other keywords we can just resolve
-			// the current schema to the the referenced one. This also happens to solve for how the schema
-			// for the standard "metadata" field is included.
-			var combinationRefs openapi3.SchemaRefs
-			switch {
-			case len(elem.AllOf) == 1:
-				combinationRefs = elem.AllOf
-			case len(elem.AnyOf) == 1:
-				combinationRefs = elem.AnyOf
-			default:
-				combinationRefs = elem.OneOf
+		}
+		// TODO(yhrn): Change to generic string-primitives-union
+		if len(elem.OneOf) == 2 &&
+			combinationSchemaCount(elem) == 2 &&
+			elem.OneOf[0].Value != nil &&
+			elem.OneOf[1].Value != nil &&
+			len(elem.Properties) == 0 &&
+			elem.AdditionalProperties == nil {
+
+			type0, type1 := elem.OneOf[0].Value.Type, elem.OneOf[1].Value.Type
+			if (type0 == "number" && type1 == "string") || (type0 == "string" && type1 == "number") {
+				return tftypes.String, nil
 			}
-			schema, err := resolveSchemaRef(combinationRefs[0], defs)
-			if err != nil {
-				return nil, err
-			}
-			return getTypeFromSchema(schema, stackdepth-1, typeCache, defs, ap, th)
 		}
 
 		return tftypes.DynamicPseudoType, nil // this is where DynamicType is set for when an attribute is tagged as 'x-kubernetes-preserve-unknown-fields'
@@ -144,6 +151,8 @@ func getTypeFromSchema(elem *openapi3.Schema, stackdepth uint64, typeCache *sync
 			if err != nil {
 				return nil, err
 			}
+			// TODO(yhrn): This logic feels flawed - why turn it into a tuple when there is some
+			// unknown type deep into the element type schema?
 			if !isTypeFullyKnown(et) {
 				t = tftypes.Tuple{ElementTypes: []tftypes.Type{et}}
 			} else {
@@ -247,4 +256,12 @@ func isTypeFullyKnown(t tftypes.Type) bool {
 		return isTypeFullyKnown(t.(tftypes.Map).ElementType)
 	}
 	return true
+}
+
+func combinationSchemaCount(schema *openapi3.Schema) int {
+	notCount := 0
+	if schema.Not != nil {
+		notCount = 1
+	}
+	return notCount + len(schema.AllOf) + len(schema.AnyOf) + len(schema.OneOf)
 }
